@@ -8,14 +8,31 @@
     <link rel="icon" href="/favicon.ico">
 </head>
 <body>
-    <!-- entry-container は変更なし -->
+
     <div id="entry-container">
         <h1>グループビデオ通話</h1>
+
+        <!-- ★★★ ここからが追加箇所 ★★★ -->
+        <div class="instructions">
+            <p><strong>【使い方】</strong></p>
+            <ul>
+                <li>参加者全員で同じ「合言葉」を入力して参加してください。</li>
+                <li>最初の参加者がホストとなり、ルームをロックできます。</li>
+                <li>自分の名前部分をクリックすると、名前を変更できます。</li>
+            </ul>
+            <p class="notes">
+                <strong>※注意事項:</strong> 最大参加人数は <strong>5人</strong> です。<br>
+                快適なご利用のため、安定したネットワーク環境とイヤホンの使用を推奨します。
+            </p>
+        </div>
+        <!-- ★★★ ここまでが追加箇所 ★★★ -->
+
         <p>参加したいルームの「合言葉」を入力してください。</p>
         <input type="text" id="room-input" placeholder="合言葉を入力...">
         <button id="join-button">参加する</button>
     </div>
 
+    <!-- call-container 以下は変更なし -->
     <div id="call-container" style="display: none;">
         <div class="main-and-side">
             <div id="main-video-container">
@@ -30,11 +47,9 @@
                     <button id="mic-button">マイクOFF</button>
                     <button id="video-button">ビデオOFF</button>
                     <button id="share-screen-button">画面共有</button>
-                    <button id="lock-room-button">🔒 ロック</button> <!-- ★追加 -->
+                    <button id="lock-room-button">🔒 ロック</button>
                     <button id="hangup-button">退出する</button>
                 </div>
-
-                <!-- ★★★ ここからが追加箇所 ★★★ -->
                 <div id="chat-container">
                     <ul id="chat-messages"></ul>
                     <form id="chat-form" action="">
@@ -42,8 +57,6 @@
                         <button>送信</button>
                     </form>
                 </div>
-                <!-- ★★★ ここまでが追加箇所 ★★★ -->
-
             </div>
         </div>
     </div>

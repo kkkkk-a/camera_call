@@ -7,8 +7,10 @@ const joinButton = document.getElementById('join-button');
 const roomInput = document.getElementById('room-input');
 const hangupButton = document.getElementById('hangup-button');
 const roomNameDisplay = document.getElementById('room-name-display');
-const mainVideoContainer = document.getElementById('main-video-container'); // ★追加
-const thumbnailGrid = document.getElementById('thumbnail-grid'); // ★変更
+const mainVideoContainer = document.getElementById('main-video-container');
+const thumbnailGrid = document.getElementById('thumbnail-grid');
+const micButton = document.getElementById('mic-button');
+const videoButton = document.getElementById('video-button');
 
 const socket = io();
 let localStream;
@@ -46,11 +48,9 @@ async function joinRoom(roomName) {
         };
         localStream = await navigator.mediaDevices.getUserMedia(constraints);
         
-        // 自分のビデオをサムネイルに追加
         addVideoStream('local', '自分', localStream);
-        setMainVideo(document.getElementById('wrapper-local')); // 最初は自分をメインに
+        setMainVideo(document.getElementById('wrapper-local'));
         
-        // ★字幕機能を開始
         startSpeechRecognition();
 
         socket.emit('join room', roomName);
@@ -88,7 +88,10 @@ socket.on('room full', (roomName) => {
 
 socket.on('message', async (message, fromId) => {
     const peer = peerConnections[fromId];
-    if (!peer) return;
+    if (!peer) {
+        if (!peerConnections[fromId]) createPeerConnection(fromId, false);
+        return;
+    }
     try {
         if (message.type === 'offer') {
             await peer.pc.setRemoteDescription(new RTCSessionDescription(message));
@@ -108,7 +111,6 @@ socket.on('message', async (message, fromId) => {
     }
 });
 
-// ★★★ 字幕イベントの受信 ★★★
 socket.on('subtitle', (subtitle, fromId) => {
     showSubtitle(`wrapper-${fromId}`, subtitle);
 });
@@ -168,22 +170,17 @@ function addVideoStream(id, name, stream) {
     wrapper.appendChild(subtitle);
     thumbnailGrid.appendChild(wrapper);
 
-    // ★クリックでメイン画面に表示するイベントを追加
     wrapper.addEventListener('click', () => setMainVideo(wrapper));
 }
 
-// ★★★ 拡大表示のための関数 ★★★
 function setMainVideo(targetWrapper) {
     const currentMain = mainVideoContainer.querySelector('.video-wrapper');
     if (currentMain) {
-        // 現在メインのビデオをサムネイルに戻す
         thumbnailGrid.appendChild(currentMain);
     }
-    // クリックされたビデオをメインに設定
     mainVideoContainer.appendChild(targetWrapper);
 }
 
-// ★★★ 字幕表示のための関数 ★★★
 let subtitleTimers = {};
 function showSubtitle(wrapperId, text) {
     const subtitleElement = document.querySelector(`#${wrapperId} .subtitle`);
@@ -191,11 +188,9 @@ function showSubtitle(wrapperId, text) {
         subtitleElement.textContent = text;
         subtitleElement.classList.add('visible');
 
-        // 古いタイマーがあればクリア
         if (subtitleTimers[wrapperId]) {
             clearTimeout(subtitleTimers[wrapperId]);
         }
-        // 3秒後に字幕を消すタイマーをセット
         subtitleTimers[wrapperId] = setTimeout(() => {
             subtitleElement.classList.remove('visible');
         }, 3000);
@@ -204,7 +199,6 @@ function showSubtitle(wrapperId, text) {
 
 // --- 5. 字幕機能 (Web Speech API) ---
 function startSpeechRecognition() {
-    // APIの存在チェックとプレフィックス対応
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
         console.warn('このブラウザはWeb Speech APIをサポートしていません。');
@@ -213,8 +207,7 @@ function startSpeechRecognition() {
 
     const recognition = new SpeechRecognition();
     recognition.lang = 'ja-JP';
-    recognition.interimResults = true; // 認識の途中結果も取得
-    recognition.continuous = true; // 継続的に認識
+    recognition.interimResults = true;
 
     recognition.onresult = (event) => {
         let interimTranscript = '';
@@ -230,16 +223,13 @@ function startSpeechRecognition() {
         
         const transcript = finalTranscript || interimTranscript;
         if (transcript) {
-            // 自分の画面に字幕を表示
             showSubtitle('wrapper-local', transcript);
-            // 他のメンバーに字幕を送信
             socket.emit('subtitle', transcript);
         }
     };
     
     recognition.onend = () => {
-        console.log('音声認識が終了しました。1秒後に再開します。');
-        setTimeout(() => recognition.start(), 1000); // 予期せぬ終了時に自動再開
+        recognition.start();
     };
 
     recognition.onerror = (event) => {
@@ -247,9 +237,42 @@ function startSpeechRecognition() {
     };
 
     recognition.start();
-    console.log('音声認識を開始しました。');
 }
 
 // --- 6. 退出処理 ---
 hangupButton.addEventListener('click', () => location.reload());
 window.addEventListener('beforeunload', () => socket.disconnect());
+
+// --- 7. メディアコントロール機能 ---
+let isMicOn = true;
+let isVideoOn = true;
+
+micButton.addEventListener('click', () => {
+    if (localStream) {
+        isMicOn = !isMicOn;
+        localStream.getAudioTracks().forEach(track => track.enabled = isMicOn);
+        
+        if (isMicOn) {
+            micButton.textContent = 'マイクOFF';
+            micButton.classList.remove('muted');
+        } else {
+            micButton.textContent = 'マイクON';
+            micButton.classList.add('muted');
+        }
+    }
+});
+
+videoButton.addEventListener('click', () => {
+    if (localStream) {
+        isVideoOn = !isVideoOn;
+        localStream.getVideoTracks().forEach(track => track.enabled = isVideoOn);
+
+        if (isVideoOn) {
+            videoButton.textContent = 'ビデオOFF';
+            videoButton.classList.remove('off');
+        } else {
+            videoButton.textContent = 'ビデオON';
+            videoButton.classList.add('off');
+        }
+    }
+});

@@ -8,7 +8,7 @@
     <link rel="icon" href="/favicon.ico">
 </head>
 <body>
-
+    <!-- entry-container は変更なし -->
     <div id="entry-container">
         <h1>グループビデオ通話</h1>
         <p>参加したいルームの「合言葉」を入力してください。</p>
@@ -30,8 +30,20 @@
                     <button id="mic-button">マイクOFF</button>
                     <button id="video-button">ビデオOFF</button>
                     <button id="share-screen-button">画面共有</button>
+                    <button id="lock-room-button">🔒 ロック</button> <!-- ★追加 -->
                     <button id="hangup-button">退出する</button>
                 </div>
+
+                <!-- ★★★ ここからが追加箇所 ★★★ -->
+                <div id="chat-container">
+                    <ul id="chat-messages"></ul>
+                    <form id="chat-form" action="">
+                        <input id="chat-input" autocomplete="off" placeholder="メッセージ..." />
+                        <button>送信</button>
+                    </form>
+                </div>
+                <!-- ★★★ ここまでが追加箇所 ★★★ -->
+
             </div>
         </div>
     </div>

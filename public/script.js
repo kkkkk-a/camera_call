@@ -18,6 +18,9 @@ let localStream;
 let currentRoom = null;
 const peerConnections = {};
 
+let recognition = null; // 音声認識オブジェクトをグローバルに
+let recognitionActive = false; // 音声認識を続けるかのフラグ
+
 const configuration = {
     iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
 };
@@ -64,16 +67,19 @@ async function joinRoom(roomName) {
 
 // --- 2. Socket.IOイベントのハンドリング ---
 socket.on('room joined', (data) => {
+    console.log(`ルーム '${data.roomId}' に参加しました。`);
     data.otherUsers.forEach(userId => {
         if (!peerConnections[userId]) createPeerConnection(userId, true);
     });
 });
 
 socket.on('user joined', (userId) => {
+    console.log(`新しいユーザーが参加しました: ${userId}`);
     if (!peerConnections[userId]) createPeerConnection(userId, false);
 });
 
 socket.on('user left', (userId) => {
+    console.log(`ユーザーが退出しました: ${userId}`);
     if (peerConnections[userId]) {
         peerConnections[userId].pc.close();
         delete peerConnections[userId];
@@ -87,12 +93,14 @@ socket.on('room full', (roomName) => {
     location.reload();
 });
 
+// ★★★ 接続ロジックを厳密化 ★★★
 socket.on('message', async (message, fromId) => {
-    if (!peerConnections[fromId]) {
-        createPeerConnection(fromId, false);
-    }
     const peer = peerConnections[fromId];
-    if (!peer) return;
+    // 接続オブジェクトが存在しないピアからのメッセージは無視する
+    if (!peer) {
+        console.warn(`不明なピアからのメッセージを無視しました: ${fromId}`);
+        return;
+    }
 
     try {
         if (message.type === 'offer') {
@@ -105,8 +113,11 @@ socket.on('message', async (message, fromId) => {
             await peer.pc.setRemoteDescription(new RTCSessionDescription(message));
             await processIceCandidateQueue(peer);
         } else if (message.type === 'candidate' && message.candidate) {
-            if (peer.pc.remoteDescription) await peer.pc.addIceCandidate(new RTCIceCandidate(message.candidate));
-            else peer.iceCandidateQueue.push(message.candidate);
+            if (peer.pc.remoteDescription) {
+                await peer.pc.addIceCandidate(new RTCIceCandidate(message.candidate));
+            } else {
+                peer.iceCandidateQueue.push(message.candidate);
+            }
         }
     } catch (e) {
         console.error(`メッセージ処理中にエラー (from: ${fromId}):`, e);
@@ -119,6 +130,7 @@ socket.on('subtitle', (subtitle, fromId) => {
 
 // --- 3. WebRTCの処理 ---
 function createPeerConnection(partnerId, isInitiator) {
+    console.log(`PeerConnectionを作成します for ${partnerId} (Initiator: ${isInitiator})`);
     const pc = new RTCPeerConnection(configuration);
     peerConnections[partnerId] = { pc: pc, iceCandidateQueue: [] };
     localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
@@ -148,38 +160,30 @@ async function processIceCandidateQueue(peer) {
 // --- 4. DOM操作（ビデオと字幕） ---
 function addVideoStream(id, name, stream) {
     if (document.getElementById(`wrapper-${id}`)) return;
-
     const wrapper = document.createElement('div');
     wrapper.className = 'video-wrapper';
     wrapper.id = `wrapper-${id}`;
-    
     const video = document.createElement('video');
     video.id = `video-${id}`;
     video.srcObject = stream;
     video.autoplay = true;
     video.playsInline = true;
     if (id === 'local') video.muted = true;
-
     const nameTag = document.createElement('h3');
     nameTag.textContent = name;
-    
     const subtitle = document.createElement('p');
     subtitle.className = 'subtitle';
     subtitle.id = `subtitle-${id}`;
-
     wrapper.appendChild(video);
     wrapper.appendChild(nameTag);
     wrapper.appendChild(subtitle);
     thumbnailGrid.appendChild(wrapper);
-
     wrapper.addEventListener('click', () => setMainVideo(wrapper));
 }
 
 function setMainVideo(targetWrapper) {
     const currentMain = mainVideoContainer.querySelector('.video-wrapper');
-    if (currentMain) {
-        thumbnailGrid.appendChild(currentMain);
-    }
+    if (currentMain) thumbnailGrid.appendChild(currentMain);
     mainVideoContainer.appendChild(targetWrapper);
 }
 
@@ -189,10 +193,7 @@ function showSubtitle(wrapperId, text) {
     if (subtitleElement) {
         subtitleElement.textContent = text;
         subtitleElement.classList.add('visible');
-
-        if (subtitleTimers[wrapperId]) {
-            clearTimeout(subtitleTimers[wrapperId]);
-        }
+        if (subtitleTimers[wrapperId]) clearTimeout(subtitleTimers[wrapperId]);
         subtitleTimers[wrapperId] = setTimeout(() => {
             subtitleElement.classList.remove('visible');
         }, 3000);
@@ -200,6 +201,7 @@ function showSubtitle(wrapperId, text) {
 }
 
 // --- 5. 字幕機能 (Web Speech API) ---
+// ★★★ 音声認識ロジックを安定化 ★★★
 function startSpeechRecognition() {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
@@ -207,24 +209,17 @@ function startSpeechRecognition() {
         return;
     }
 
-    const recognition = new SpeechRecognition();
+    recognition = new SpeechRecognition();
     recognition.lang = 'ja-JP';
     recognition.interimResults = true;
     recognition.continuous = true;
+    recognitionActive = true;
 
     recognition.onresult = (event) => {
-        let interimTranscript = '';
-        let finalTranscript = '';
-
+        let transcript = '';
         for (let i = event.resultIndex; i < event.results.length; ++i) {
-            if (event.results[i].isFinal) {
-                finalTranscript += event.results[i][0].transcript;
-            } else {
-                interimTranscript += event.results[i][0].transcript;
-            }
+            transcript += event.results[i][0].transcript;
         }
-        
-        const transcript = finalTranscript || interimTranscript;
         if (transcript) {
             showSubtitle('wrapper-local', transcript);
             socket.emit('subtitle', transcript);
@@ -232,21 +227,44 @@ function startSpeechRecognition() {
     };
     
     recognition.onend = () => {
-        console.log('音声認識が終了しました。1秒後に再開します。');
-        setTimeout(() => recognition.start(), 1000);
+        if (recognitionActive) {
+            console.log('音声認識が終了したため、再開します。');
+            recognition.start();
+        } else {
+            console.log('音声認識を意図的に停止しました。');
+        }
     };
 
     recognition.onerror = (event) => {
         console.error('音声認識エラー:', event.error);
+        if (event.error === 'no-speech' || event.error === 'aborted') {
+            // これらはエラーではない場合が多いため、onendで自動再開させる
+        } else if (event.error === 'not-allowed') {
+            // マイクが許可されなかった場合は、認識を完全に停止
+            recognitionActive = false;
+        }
     };
 
     recognition.start();
     console.log('音声認識を開始しました。');
 }
 
+function stopSpeechRecognition() {
+    if (recognition) {
+        recognitionActive = false;
+        recognition.stop();
+    }
+}
+
 // --- 6. 退出処理 ---
-hangupButton.addEventListener('click', () => location.reload());
-window.addEventListener('beforeunload', () => socket.disconnect());
+hangupButton.addEventListener('click', () => {
+    stopSpeechRecognition();
+    location.reload();
+});
+window.addEventListener('beforeunload', () => {
+    stopSpeechRecognition();
+    socket.disconnect();
+});
 
 // --- 7. メディアコントロール機能 ---
 let isMicOn = true;
@@ -256,14 +274,8 @@ micButton.addEventListener('click', () => {
     if (localStream) {
         isMicOn = !isMicOn;
         localStream.getAudioTracks().forEach(track => track.enabled = isMicOn);
-        
-        if (isMicOn) {
-            micButton.textContent = 'マイクOFF';
-            micButton.classList.remove('muted');
-        } else {
-            micButton.textContent = 'マイクON';
-            micButton.classList.add('muted');
-        }
+        micButton.textContent = isMicOn ? 'マイクOFF' : 'マイクON';
+        micButton.classList.toggle('muted', !isMicOn);
     }
 });
 
@@ -271,14 +283,8 @@ videoButton.addEventListener('click', () => {
     if (localStream) {
         isVideoOn = !isVideoOn;
         localStream.getVideoTracks().forEach(track => track.enabled = isVideoOn);
-
-        if (isVideoOn) {
-            videoButton.textContent = 'ビデオOFF';
-            videoButton.classList.remove('off');
-        } else {
-            videoButton.textContent = 'ビデオON';
-            videoButton.classList.add('off');
-        }
+        videoButton.textContent = isVideoOn ? 'ビデオOFF' : 'ビデオON';
+        videoButton.classList.toggle('off', !isVideoOn);
     }
 });
 
@@ -289,37 +295,22 @@ let cameraTrack = null;
 
 async function startScreenShare() {
     if (isScreenSharing) return;
-
     try {
-        // audio: false を明示的に指定して、エコーの原因となるシステム音声を取得しないようにする
-        screenStream = await navigator.mediaDevices.getDisplayMedia({
-            video: true,
-            audio: false
-        });
-        
+        screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
         if (localStream && localStream.getVideoTracks().length > 0) {
             cameraTrack = localStream.getVideoTracks()[0];
         }
-
         const screenTrack = screenStream.getVideoTracks()[0];
-
         for (const peerId in peerConnections) {
             const sender = peerConnections[peerId].pc.getSenders().find(s => s.track && s.track.kind === 'video');
-            if (sender) {
-                await sender.replaceTrack(screenTrack);
-            }
+            if (sender) await sender.replaceTrack(screenTrack);
         }
-
         const localVideo = document.getElementById('video-local');
         localVideo.srcObject = screenStream;
         isScreenSharing = true;
         shareScreenButton.textContent = '共有停止';
         shareScreenButton.classList.add('sharing');
-
-        screenTrack.onended = () => {
-            stopScreenShare();
-        };
-
+        screenTrack.onended = () => stopScreenShare();
     } catch (e) {
         console.error('画面共有の開始に失敗しました:', e);
     }
@@ -327,16 +318,11 @@ async function startScreenShare() {
 
 async function stopScreenShare() {
     if (!isScreenSharing || !cameraTrack) return;
-
     for (const peerId in peerConnections) {
         const sender = peerConnections[peerId].pc.getSenders().find(s => s.track && s.track.kind === 'video');
-        if (sender) {
-            await sender.replaceTrack(cameraTrack);
-        }
+        if (sender) await sender.replaceTrack(cameraTrack);
     }
-
     screenStream.getTracks().forEach(track => track.stop());
-    
     const localVideo = document.getElementById('video-local');
     localVideo.srcObject = localStream;
     isScreenSharing = false;

@@ -291,7 +291,11 @@ async function startScreenShare() {
     if (isScreenSharing) return;
 
     try {
-        screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+        // audio: false を明示的に指定して、エコーの原因となるシステム音声を取得しないようにする
+        screenStream = await navigator.mediaDevices.getDisplayMedia({
+            video: true,
+            audio: false
+        });
         
         if (localStream && localStream.getVideoTracks().length > 0) {
             cameraTrack = localStream.getVideoTracks()[0];

@@ -43,6 +43,7 @@ async function joinRoom(roomName) {
     } catch (e) {
         console.error('メディアの取得に失敗:', e);
         alert('カメラまたはマイクへのアクセスを許可してください。');
+        location.reload();
     }
 }
 
@@ -52,18 +53,19 @@ async function joinRoom(roomName) {
 socket.on('room joined', (data) => {
     console.log(`ルーム '${data.roomId}' に参加しました。`);
     console.log('他のユーザー:', data.otherUsers);
-
-    // 既にルームにいる他の全ユーザーに接続を開始
+    
+    // 既にルームにいる他の全ユーザーに対して、自分から接続を開始（Offerを送る）
     data.otherUsers.forEach(userId => {
-        createPeerConnection(userId, true); // 自分から接続を開始するので initiator = true
+        if (!peerConnections[userId]) {
+            createPeerConnection(userId, true);
+        }
     });
 });
 
-// 新しいユーザーがルームに参加したとき
+// 新しいユーザーがルームに参加した通知を受け取ったとき
 socket.on('user joined', (userId) => {
     console.log(`新しいユーザーが参加しました: ${userId}`);
-    // 新しく参加してきたユーザーへの接続を準備（相手からオファーが来るのを待つ）
-    createPeerConnection(userId, false);
+    // この時点では何もしない。新しいユーザー（Initiator）からのOfferを待つ。
 });
 
 // ユーザーがルームから退出したとき
@@ -73,81 +75,96 @@ socket.on('user left', (userId) => {
         peerConnections[userId].close();
         delete peerConnections[userId];
     }
-    const remoteVideo = document.getElementById(`video-${userId}`);
-    if (remoteVideo) {
-        remoteVideo.parentElement.remove();
+    const remoteVideoWrapper = document.getElementById(`wrapper-${userId}`);
+    if (remoteVideoWrapper) {
+        remoteVideoWrapper.remove();
     }
 });
 
 // ルームが満室だったとき
 socket.on('room full', (roomName) => {
     alert(`ルーム '${roomName}' は満室です（最大10人）。`);
-    location.reload(); // ページをリロードして最初の画面に戻す
+    location.reload();
 });
 
 // シグナリングメッセージを受信したとき
-socket.on('message', (message, fromId) => {
-    const pc = peerConnections[fromId];
-    if (!pc) return;
+socket.on('message', async (message, fromId) => {
+    // 相手との接続オブジェクトがまだなければ作成する（Offerを受け取った側）
+    if (!peerConnections[fromId]) {
+        createPeerConnection(fromId, false);
+    }
 
-    if (message.type === 'offer') {
-        pc.setRemoteDescription(new RTCSessionDescription(message))
-            .then(() => pc.createAnswer())
-            .then(answer => {
-                pc.setLocalDescription(answer);
-                socket.emit('message', answer, fromId);
-            })
-            .catch(e => console.error(e));
-    } else if (message.type === 'answer') {
-        pc.setRemoteDescription(new RTCSessionDescription(message));
-    } else if (message.type === 'candidate') {
-        pc.addIceCandidate(new RTCIceCandidate(message.candidate));
+    const pc = peerConnections[fromId];
+    
+    try {
+        if (message.type === 'offer') {
+            if (pc.signalingState !== 'stable') {
+                console.warn(`Offerを受け取りましたが、状態がstableではないため無視します。現在の状態: ${pc.signalingState}`);
+                return;
+            }
+            await pc.setRemoteDescription(new RTCSessionDescription(message));
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            socket.emit('message', answer, fromId);
+
+        } else if (message.type === 'answer') {
+            if (pc.signalingState !== 'have-local-offer') {
+                console.warn(`Answerを受け取りましたが、状態がhave-local-offerではないため無視します。現在の状態: ${pc.signalingState}`);
+                return;
+            }
+            await pc.setRemoteDescription(new RTCSessionDescription(message));
+
+        } else if (message.type === 'candidate' && message.candidate) {
+            await pc.addIceCandidate(new RTCIceCandidate(message.candidate));
+        }
+    } catch (e) {
+        console.error(`メッセージ処理中にエラーが発生しました (from: ${fromId}):`, e);
     }
 });
 
 // --- 3. WebRTCの処理 ---
 
-// PeerConnectionの作成（相手ごと）
 function createPeerConnection(partnerId, isInitiator) {
+    console.log(`PeerConnectionを作成します for ${partnerId} (Initiator: ${isInitiator})`);
     const pc = new RTCPeerConnection(configuration);
     peerConnections[partnerId] = pc;
 
-    // 自分のメディアストリームを接続に追加
     localStream.getTracks().forEach(track => {
         pc.addTrack(track, localStream);
     });
 
-    // (発信者側のみ) オファーを作成
     if (isInitiator) {
         pc.createOffer()
-            .then(offer => {
-                pc.setLocalDescription(offer);
-                socket.emit('message', offer, partnerId);
+            .then(offer => pc.setLocalDescription(offer))
+            .then(() => {
+                socket.emit('message', pc.localDescription, partnerId);
             })
-            .catch(e => console.error(e));
+            .catch(e => console.error(`Offerの作成に失敗しました for ${partnerId}:`, e));
     }
 
-    // ICE候補が見つかったときの処理
     pc.onicecandidate = (event) => {
         if (event.candidate) {
             socket.emit('message', { type: 'candidate', candidate: event.candidate }, partnerId);
         }
     };
 
-    // 相手の映像ストリームを受信したときの処理
     pc.ontrack = (event) => {
         addRemoteVideoStream(partnerId, event.streams[0]);
+    };
+
+    pc.onconnectionstatechange = () => {
+        console.log(`Connection state for ${partnerId}: ${pc.connectionState}`);
     };
 
     return pc;
 }
 
-// 相手のビデオ要素をDOMに追加
 function addRemoteVideoStream(userId, stream) {
     if (document.getElementById(`video-${userId}`)) return;
 
     const videoWrapper = document.createElement('div');
     videoWrapper.className = 'video-wrapper';
+    videoWrapper.id = `wrapper-${userId}`;
     
     const remoteVideo = document.createElement('video');
     remoteVideo.id = `video-${userId}`;
@@ -156,7 +173,7 @@ function addRemoteVideoStream(userId, stream) {
     remoteVideo.playsInline = true;
 
     const nameTag = document.createElement('h3');
-    nameTag.textContent = `User: ${userId.substring(0, 4)}`; // IDを短く表示
+    nameTag.textContent = `User: ${userId.substring(0, 4)}`;
 
     videoWrapper.appendChild(remoteVideo);
     videoWrapper.appendChild(nameTag);
@@ -165,14 +182,10 @@ function addRemoteVideoStream(userId, stream) {
 
 // --- 4. 退出処理 ---
 hangupButton.addEventListener('click', () => {
-    // 全ての接続を閉じる
-    for (const userId in peerConnections) {
-        peerConnections[userId].close();
-    }
-    // 自分のメディアを停止
-    if (localStream) {
-        localStream.getTracks().forEach(track => track.stop());
-    }
-    // サーバーに退出を通知する必要はない（disconnectイベントで処理される）
-    location.reload(); // ページをリロードして最初の画面に戻す
+    location.reload();
+});
+
+window.addEventListener('beforeunload', () => {
+    // ページを閉じる・リロードする際にソケット接続を明示的に切断
+    socket.disconnect();
 });

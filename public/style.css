@@ -95,30 +95,7 @@ body {
     transform: scaleX(-1);
 }
 
-.subtitle {
-    position: absolute;
-    bottom: 30px;
-    left: 10px;
-    right: 10px;
-    color: white;
-    background-color: rgba(0, 0, 0, 0.7);
-    padding: 5px 8px;
-    border-radius: 5px;
-    font-size: 16px;
-    text-align: center;
-    z-index: 3;
-    opacity: 0;
-    transition: opacity 0.3s;
-}
-
-.subtitle.visible {
-    opacity: 1;
-}
-
-#main-video-container .subtitle {
-    font-size: 24px;
-    bottom: 50px;
-}
+/* ★★★ 字幕用のスタイル定義をここから削除 ★★★ */
 
 h1, h2 { text-align: center; }
 

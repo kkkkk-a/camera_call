@@ -22,7 +22,6 @@ const rooms = {};
 io.on('connection', (socket) => {
     let currentRoom = null;
 
-    // ★★★ 修正点: initialUsername を受け取らないように変更
     socket.on('join room', (roomName) => {
         const clientsInRoom = io.sockets.adapter.rooms.get(roomName);
         const numClients = clientsInRoom ? clientsInRoom.size : 0;
@@ -36,7 +35,6 @@ io.on('connection', (socket) => {
             return;
         }
 
-        // ★★★ 修正点: サーバー側でユーザー名を生成
         const newUsername = `参加者${numClients + 1}`;
 
         if (!rooms[roomName]) {
@@ -58,15 +56,13 @@ io.on('connection', (socket) => {
             }
         }
         
-        // ★★★ 修正点: 参加した本人に、割り当てられた名前も通知
         socket.emit('room joined', {
-            myName: newUsername, // 自分の名前
+            myName: newUsername,
             otherUsers: otherUsers,
             isLocked: rooms[roomName].isLocked,
             hostId: rooms[roomName].hostId
         });
         
-        // ★★★ 修正点: 他のメンバーにも、生成された名前で参加を通知
         socket.to(roomName).emit('user joined', {
             id: socket.id,
             username: newUsername
@@ -105,19 +101,28 @@ io.on('connection', (socket) => {
         }
     });
     
+    // ★★★★★ ホスト退出処理のロジックを修正 ★★★★★
     socket.on('disconnect', () => {
         if (currentRoom && rooms[currentRoom]) {
+            const wasHost = rooms[currentRoom].hostId === socket.id;
+            
+            // ルームにいる他のユーザーに、誰かが退出したことを通知
             io.to(currentRoom).emit('user left', socket.id);
             
-            const wasHost = rooms[currentRoom].hostId === socket.id;
+            // ユーザーリストから削除
             rooms[currentRoom].users.delete(socket.id);
 
-            if (rooms[currentRoom].users.size === 0) {
+            // ホストが退出した場合
+            if (wasHost) {
+                // ルーム内の残りの全員にルーム終了を通知
+                socket.to(currentRoom).emit('room closed', 'ホストが退出したため、ルームは終了しました。');
+                // ルーム情報をメモリから削除
                 delete rooms[currentRoom];
-            } else if (wasHost) {
-                const newHostId = rooms[currentRoom].users.keys().next().value;
-                rooms[currentRoom].hostId = newHostId;
-                io.to(currentRoom).emit('new host', newHostId);
+            } 
+            // 参加者が誰もいなくなった場合
+            else if (rooms[currentRoom] && rooms[currentRoom].users.size === 0) {
+                // ルーム情報をメモリから削除
+                delete rooms[currentRoom];
             }
         }
     });

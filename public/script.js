@@ -37,7 +37,19 @@ async function joinRoom(roomName) {
     roomNameDisplay.textContent = `ルーム: ${currentRoom}`;
 
     try {
-        localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        // ★★★ ここからが修正部分 ★★★
+        const constraints = {
+            video: true,
+            audio: {
+                // これらの設定で音声処理を強制的に有効化します
+                echoCancellation: true,    // エコーキャンセレーション
+                noiseSuppression: true,  // ノイズ抑制（環境音などを低減）
+                autoGainControl: true      // 自動ゲインコントロール（声の大きさを自動調整）
+            }
+        };
+        localStream = await navigator.mediaDevices.getUserMedia(constraints);
+        // ★★★ ここまでが修正部分 ★★★
+
         localVideo.srcObject = localStream;
         socket.emit('join room', roomName);
     } catch (e) {

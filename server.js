@@ -50,6 +50,12 @@ io.on('connection', (socket) => {
         // メッセージを特定の相手にだけ送る
         io.to(toId).emit('message', message, socket.id);
     });
+        socket.on('subtitle', (subtitleData) => {
+        if (currentRoom) {
+            // 自分以外のルームメンバーに字幕データを転送
+            socket.to(currentRoom).emit('subtitle', subtitleData, socket.id);
+        }
+    });
 
     // ユーザーが切断したときの処理
     socket.on('disconnect', () => {

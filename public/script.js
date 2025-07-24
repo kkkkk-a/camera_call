@@ -6,16 +6,15 @@ const callContainer = document.getElementById('call-container');
 const joinButton = document.getElementById('join-button');
 const roomInput = document.getElementById('room-input');
 const hangupButton = document.getElementById('hangup-button');
-const localVideo = document.getElementById('local-video');
-const videoGrid = document.getElementById('video-grid');
 const roomNameDisplay = document.getElementById('room-name-display');
+const mainVideoContainer = document.getElementById('main-video-container'); // ★追加
+const thumbnailGrid = document.getElementById('thumbnail-grid'); // ★変更
 
 const socket = io();
 let localStream;
 let currentRoom = null;
-const peerConnections = {}; // 相手ごとの接続情報（PCとICE候補キュー）を管理
+const peerConnections = {};
 
-// STUNサーバーの設定
 const configuration = {
     iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
 };
@@ -46,7 +45,14 @@ async function joinRoom(roomName) {
             }
         };
         localStream = await navigator.mediaDevices.getUserMedia(constraints);
-        localVideo.srcObject = localStream;
+        
+        // 自分のビデオをサムネイルに追加
+        addVideoStream('local', '自分', localStream);
+        setMainVideo(document.getElementById('wrapper-local')); // 最初は自分をメインに
+        
+        // ★字幕機能を開始
+        startSpeechRecognition();
+
         socket.emit('join room', roomName);
     } catch (e) {
         console.error('メディアの取得に失敗:', e);
@@ -56,169 +62,194 @@ async function joinRoom(roomName) {
 }
 
 // --- 2. Socket.IOイベントのハンドリング ---
-
-// ルームへの参加が完了したとき（サーバーから既存ユーザーのリストが送られてくる）
 socket.on('room joined', (data) => {
-    console.log(`ルーム '${data.roomId}' に参加しました。`);
-    console.log('他のユーザー:', data.otherUsers);
-    
-    // 既にルームにいる他の全ユーザーに対して、自分から接続を開始（Offerを送る）
     data.otherUsers.forEach(userId => {
-        if (!peerConnections[userId]) {
-            createPeerConnection(userId, true);
-        }
+        if (!peerConnections[userId]) createPeerConnection(userId, true);
     });
 });
 
-// ★★★ ここが重要な変更点 ★★★
-// 新しいユーザーがルームに参加した通知を受け取ったとき（既存ユーザー側の処理）
 socket.on('user joined', (userId) => {
-    console.log(`新しいユーザーが参加しました: ${userId}`);
-    // 新しいユーザーとの接続オブジェクトを「受け身」の状態で事前に作成しておく。
-    // これにより、相手からのOfferメッセージを確実に待つことができる。
-    if (!peerConnections[userId]) {
-        createPeerConnection(userId, false);
-    }
+    if (!peerConnections[userId]) createPeerConnection(userId, false);
 });
 
-// ユーザーがルームから退出したとき
 socket.on('user left', (userId) => {
-    console.log(`ユーザーが退出しました: ${userId}`);
     if (peerConnections[userId]) {
         peerConnections[userId].pc.close();
         delete peerConnections[userId];
     }
     const remoteVideoWrapper = document.getElementById(`wrapper-${userId}`);
-    if (remoteVideoWrapper) {
-        remoteVideoWrapper.remove();
-    }
+    if (remoteVideoWrapper) remoteVideoWrapper.remove();
 });
 
-// ルームが満室だったとき
 socket.on('room full', (roomName) => {
-    alert(`ルーム '${roomName}' は満室です（最大10人）。`);
+    alert(`ルーム '${roomName}' は満室です。`);
     location.reload();
 });
 
-// シグナリングメッセージを受信したとき
 socket.on('message', async (message, fromId) => {
-    // ★★★ ここのロジックを簡潔化 ★★★
-    // この時点でpeerConnections[fromId]は必ず存在するはず
     const peer = peerConnections[fromId];
-    if (!peer) {
-        console.error(`不明なピアからのメッセージです: ${fromId}`);
-        return;
-    }
-    
+    if (!peer) return;
     try {
         if (message.type === 'offer') {
-            if (peer.pc.signalingState !== 'stable') {
-                console.warn(`Offerを受け取りましたが、状態がstableではないため無視します。現在の状態: ${peer.pc.signalingState}`);
-                return;
-            }
             await peer.pc.setRemoteDescription(new RTCSessionDescription(message));
             const answer = await peer.pc.createAnswer();
             await peer.pc.setLocalDescription(answer);
             socket.emit('message', answer, fromId);
             await processIceCandidateQueue(peer);
-
         } else if (message.type === 'answer') {
-            if (peer.pc.signalingState !== 'have-local-offer') {
-                console.warn(`Answerを受け取りましたが、状態がhave-local-offerではないため無視します。現在の状態: ${peer.pc.signalingState}`);
-                return;
-            }
             await peer.pc.setRemoteDescription(new RTCSessionDescription(message));
             await processIceCandidateQueue(peer);
-
         } else if (message.type === 'candidate' && message.candidate) {
-            if (peer.pc.remoteDescription) {
-                await peer.pc.addIceCandidate(new RTCIceCandidate(message.candidate));
-            } else {
-                console.log('ICE候補を待機リストに追加します');
-                peer.iceCandidateQueue.push(message.candidate);
-            }
+            if (peer.pc.remoteDescription) await peer.pc.addIceCandidate(new RTCIceCandidate(message.candidate));
+            else peer.iceCandidateQueue.push(message.candidate);
         }
     } catch (e) {
-        console.error(`メッセージ処理中にエラーが発生しました (from: ${fromId}):`, e);
+        console.error(`メッセージ処理中にエラー (from: ${fromId}):`, e);
     }
 });
 
+// ★★★ 字幕イベントの受信 ★★★
+socket.on('subtitle', (subtitle, fromId) => {
+    showSubtitle(`wrapper-${fromId}`, subtitle);
+});
 
 // --- 3. WebRTCの処理 ---
-
 function createPeerConnection(partnerId, isInitiator) {
-    console.log(`PeerConnectionを作成します for ${partnerId} (Initiator: ${isInitiator})`);
     const pc = new RTCPeerConnection(configuration);
-
-    peerConnections[partnerId] = {
-        pc: pc,
-        iceCandidateQueue: []
-    };
-
-    localStream.getTracks().forEach(track => {
-        pc.addTrack(track, localStream);
-    });
+    peerConnections[partnerId] = { pc: pc, iceCandidateQueue: [] };
+    localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
 
     if (isInitiator) {
         pc.createOffer()
             .then(offer => pc.setLocalDescription(offer))
-            .then(() => {
-                socket.emit('message', pc.localDescription, partnerId);
-            })
-            .catch(e => console.error(`Offerの作成に失敗しました for ${partnerId}:`, e));
+            .then(() => socket.emit('message', pc.localDescription, partnerId))
+            .catch(e => console.error(`Offer作成失敗 for ${partnerId}:`, e));
     }
-
     pc.onicecandidate = (event) => {
-        if (event.candidate) {
-            socket.emit('message', { type: 'candidate', candidate: event.candidate }, partnerId);
-        }
+        if (event.candidate) socket.emit('message', { type: 'candidate', candidate: event.candidate }, partnerId);
     };
-
     pc.ontrack = (event) => {
-        addRemoteVideoStream(partnerId, event.streams[0]);
+        addVideoStream(partnerId, `User: ${partnerId.substring(0, 4)}`, event.streams[0]);
     };
-
-    pc.onconnectionstatechange = () => {
-        console.log(`Connection state for ${partnerId}: ${pc.connectionState}`);
-    };
-
     return pc;
 }
 
 async function processIceCandidateQueue(peer) {
     while (peer.iceCandidateQueue.length > 0) {
         const candidate = peer.iceCandidateQueue.shift();
-        console.log('待機リストからICE候補を処理します:', candidate);
         await peer.pc.addIceCandidate(new RTCIceCandidate(candidate));
     }
 }
 
-function addRemoteVideoStream(userId, stream) {
-    if (document.getElementById(`video-${userId}`)) return;
+// --- 4. DOM操作（ビデオと字幕） ---
+function addVideoStream(id, name, stream) {
+    if (document.getElementById(`wrapper-${id}`)) return;
 
-    const videoWrapper = document.createElement('div');
-    videoWrapper.className = 'video-wrapper';
-    videoWrapper.id = `wrapper-${userId}`;
+    const wrapper = document.createElement('div');
+    wrapper.className = 'video-wrapper';
+    wrapper.id = `wrapper-${id}`;
     
-    const remoteVideo = document.createElement('video');
-    remoteVideo.id = `video-${userId}`;
-    remoteVideo.srcObject = stream;
-    remoteVideo.autoplay = true;
-    remoteVideo.playsInline = true;
+    const video = document.createElement('video');
+    video.id = `video-${id}`;
+    video.srcObject = stream;
+    video.autoplay = true;
+    video.playsInline = true;
+    if (id === 'local') video.muted = true;
 
     const nameTag = document.createElement('h3');
-    nameTag.textContent = `User: ${userId.substring(0, 4)}`;
+    nameTag.textContent = name;
+    
+    const subtitle = document.createElement('p');
+    subtitle.className = 'subtitle';
+    subtitle.id = `subtitle-${id}`;
 
-    videoWrapper.appendChild(remoteVideo);
-    videoWrapper.appendChild(nameTag);
-    videoGrid.appendChild(videoWrapper);
+    wrapper.appendChild(video);
+    wrapper.appendChild(nameTag);
+    wrapper.appendChild(subtitle);
+    thumbnailGrid.appendChild(wrapper);
+
+    // ★クリックでメイン画面に表示するイベントを追加
+    wrapper.addEventListener('click', () => setMainVideo(wrapper));
 }
 
-// --- 4. 退出処理 ---
-hangupButton.addEventListener('click', () => {
-    location.reload();
-});
+// ★★★ 拡大表示のための関数 ★★★
+function setMainVideo(targetWrapper) {
+    const currentMain = mainVideoContainer.querySelector('.video-wrapper');
+    if (currentMain) {
+        // 現在メインのビデオをサムネイルに戻す
+        thumbnailGrid.appendChild(currentMain);
+    }
+    // クリックされたビデオをメインに設定
+    mainVideoContainer.appendChild(targetWrapper);
+}
 
-window.addEventListener('beforeunload', () => {
-    socket.disconnect();
-});
+// ★★★ 字幕表示のための関数 ★★★
+let subtitleTimers = {};
+function showSubtitle(wrapperId, text) {
+    const subtitleElement = document.querySelector(`#${wrapperId} .subtitle`);
+    if (subtitleElement) {
+        subtitleElement.textContent = text;
+        subtitleElement.classList.add('visible');
+
+        // 古いタイマーがあればクリア
+        if (subtitleTimers[wrapperId]) {
+            clearTimeout(subtitleTimers[wrapperId]);
+        }
+        // 3秒後に字幕を消すタイマーをセット
+        subtitleTimers[wrapperId] = setTimeout(() => {
+            subtitleElement.classList.remove('visible');
+        }, 3000);
+    }
+}
+
+// --- 5. 字幕機能 (Web Speech API) ---
+function startSpeechRecognition() {
+    // APIの存在チェックとプレフィックス対応
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+        console.warn('このブラウザはWeb Speech APIをサポートしていません。');
+        return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.lang = 'ja-JP';
+    recognition.interimResults = true; // 認識の途中結果も取得
+    recognition.continuous = true; // 継続的に認識
+
+    recognition.onresult = (event) => {
+        let interimTranscript = '';
+        let finalTranscript = '';
+
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+            if (event.results[i].isFinal) {
+                finalTranscript += event.results[i][0].transcript;
+            } else {
+                interimTranscript += event.results[i][0].transcript;
+            }
+        }
+        
+        const transcript = finalTranscript || interimTranscript;
+        if (transcript) {
+            // 自分の画面に字幕を表示
+            showSubtitle('wrapper-local', transcript);
+            // 他のメンバーに字幕を送信
+            socket.emit('subtitle', transcript);
+        }
+    };
+    
+    recognition.onend = () => {
+        console.log('音声認識が終了しました。1秒後に再開します。');
+        setTimeout(() => recognition.start(), 1000); // 予期せぬ終了時に自動再開
+    };
+
+    recognition.onerror = (event) => {
+        console.error('音声認識エラー:', event.error);
+    };
+
+    recognition.start();
+    console.log('音声認識を開始しました。');
+}
+
+// --- 6. 退出処理 ---
+hangupButton.addEventListener('click', () => location.reload());
+window.addEventListener('beforeunload', () => socket.disconnect());

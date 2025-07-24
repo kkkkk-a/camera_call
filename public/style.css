@@ -134,8 +134,7 @@ body {
 }
 
 #side-panel {
-    width: 320px;
-    flex-shrink: 0;
+
     background-color: var(--bg-mid);
     display: flex;
     flex-direction: column;
@@ -156,7 +155,7 @@ body {
    ======================================== */
 #thumbnail-grid {
     display: flex;
-    flex-direction: column;
+
     gap: 1em;
     overflow-y: auto;
 }
@@ -214,9 +213,16 @@ body {
     position: absolute;
     top: 0;
     left: 0;
+}
+/* ★★★★★ 左右反転のスタイル ★★★★★ */
+/* ローカルのカメラ映像は左右反転させる（鏡のように見せるため）*/
+#wrapper-local video {
     transform: scaleX(-1);
 }
-
+/* ただし、screen-sharingクラスが付与されている場合は反転しない */
+#wrapper-local.screen-sharing video {
+    transform: scaleX(1);
+}
 .username-input {
     position: absolute;
     bottom: 5px;
@@ -264,6 +270,12 @@ body {
 
 #share-screen-button { background-color: var(--green); }
 #share-screen-button.sharing { background-color: var(--orange); }
+
+#switch-camera-button {
+    background-color: var(--orange);
+    /* デフォルトでは非表示。JSでカメラが複数ある時だけ表示する */
+    display: none;
+}
 
 #lock-room-button { background-color: var(--purple); }
 #lock-room-button.locked { background-color: var(--red); }

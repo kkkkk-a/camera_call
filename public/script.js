@@ -28,19 +28,30 @@ const configuration = {
     iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
 };
 
-// --- 1. 入室処理フローの抜本的見直し ---
+// --- 1. 入室処理フローの再々修正 ---
 joinButton.addEventListener('click', () => {
     const roomName = roomInput.value;
-    if (!roomName) {
+    if (roomName) {
+        joinRoom(roomName);
+    } else {
         alert('合言葉を入力してください。');
-        return;
     }
-    
-    // ★★★ まずメディアの取得を試みる ★★★
-    setupLocalMedia(roomName);
 });
 
-async function setupLocalMedia(roomName) {
+function joinRoom(roomName) {
+    currentRoom = roomName;
+    entryContainer.style.display = 'none';
+    callContainer.style.display = 'block';
+    roomNameDisplay.textContent = `ルーム: ${currentRoom}`;
+
+    // まずサーバーにルーム参加を通知する
+    socket.emit('join room', roomName);
+
+    // その後、メディアの取得を試みる
+    setupLocalMedia();
+}
+
+async function setupLocalMedia() {
     try {
         const constraints = {
             video: true,
@@ -50,32 +61,24 @@ async function setupLocalMedia(roomName) {
                 autoGainControl: true
             }
         };
-        // ユーザーのクリック直後に、まずこれを実行する
         localStream = await navigator.mediaDevices.getUserMedia(constraints);
         
-        // ★★★ メディア取得に成功した場合のみ、次のステップに進む ★★★
-        joinRoom(roomName);
+        addVideoStream('local', myUsername, localStream);
+        setMainVideo(document.getElementById('wrapper-local'));
 
+        // メディアが取得できたら、自分のトラックを既存の接続に後から追加する
+        for (const peerId in peerConnections) {
+            localStream.getTracks().forEach(track => {
+                peerConnections[peerId].pc.addTrack(track, localStream);
+            });
+        }
     } catch (e) {
         console.error('メディアの取得に失敗:', e);
-        // エラーメッセージを表示し、処理を中断する
-        alert('カメラまたはマイクへのアクセスに失敗しました。ブラウザの許可設定を確認し、他のアプリでカメラが使用されていないか確認してください。');
-        // この段階ではまだルームに参加していないので、リロードは不要
+        // ★★★ アラートを削除し、視聴者として参加を継続 ★★★
+        addVideoStream('local', myUsername, null);
+        setMainVideo(document.getElementById('wrapper-local'));
+        displayMediaError(e); // 失敗理由を画面に表示
     }
-}
-
-function joinRoom(roomName) {
-    currentRoom = roomName;
-    entryContainer.style.display = 'none';
-    callContainer.style.display = 'block';
-    roomNameDisplay.textContent = `ルーム: ${currentRoom}`;
-
-    // 自分のビデオを先に追加
-    addVideoStream('local', myUsername, localStream);
-    setMainVideo(document.getElementById('wrapper-local'));
-    
-    // サーバーにルーム参加を通知
-    socket.emit('join room', roomName);
 }
 
 
@@ -167,9 +170,12 @@ socket.on('username changed', (data) => {
 function createPeerConnection(partnerId, isInitiator) {
     const pc = new RTCPeerConnection(configuration);
     peerConnections[partnerId] = { pc: pc, iceCandidateQueue: [] };
-    // この時点でlocalStreamは必ず存在するので、トラックを追加する
-    localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
     
+    // もし自分のメディアストリームが既に取得済みなら、トラックを追加する
+    if (localStream) {
+        localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+    }
+
     if (isInitiator) {
         pc.createOffer()
             .then(offer => pc.setLocalDescription(offer))
@@ -200,17 +206,26 @@ function addVideoStream(id, name, stream) {
     wrapper.id = `wrapper-${id}`;
     const video = document.createElement('video');
     video.id = `video-${id}`;
+
     if (stream) {
         video.srcObject = stream;
+    } else {
+        // メディアがない場合は背景とプレースホルダーテキストを表示
+        wrapper.style.backgroundColor = '#1c1c1c';
+        wrapper.style.position = 'relative';
     }
+
     video.autoplay = true;
     video.playsInline = true;
     if (id === 'local') video.muted = true;
+    
     const nameTag = document.createElement('h3');
     nameTag.textContent = name;
+    
     wrapper.appendChild(video);
     wrapper.appendChild(nameTag);
     thumbnailGrid.appendChild(wrapper);
+
     if (id === 'local') {
         nameTag.title = 'クリックして編集';
         nameTag.addEventListener('click', () => makeNameEditable(nameTag));
@@ -355,16 +370,13 @@ function updateLockState(locked) {
         lockRoomButton.classList.remove('locked');
     }
 }
-
 lockRoomButton.addEventListener('click', () => {
     socket.emit('toggle lock');
 });
 
 function appendChatMessage(senderName, msg, isMyMessage = false) {
     const item = document.createElement('li');
-    if (isMyMessage) {
-        item.className = 'my-message';
-    }
+    if (isMyMessage) item.className = 'my-message';
     const nameSpan = document.createElement('span');
     nameSpan.className = 'sender-name';
     nameSpan.textContent = `${senderName}: `;
@@ -382,3 +394,31 @@ chatForm.addEventListener('submit', (e) => {
         chatInput.value = '';
     }
 });
+
+// --- 10. メディアエラー表示機能 ---
+function displayMediaError(error) {
+    const localWrapper = document.getElementById('wrapper-local');
+    if (!localWrapper) return;
+
+    let message = 'メディアの取得中に不明なエラーが発生しました。';
+    if (error.name === 'NotFoundError') {
+        message = 'カメラまたはマイクが見つかりません。デバイスが接続されているか確認してください。';
+    } else if (error.name === 'NotAllowedError') {
+        message = 'カメラとマイクへのアクセスがブロックされています。ブラウザのアドレスバーの🔒アイコンから許可設定を確認してください。';
+    } else if (error.name === 'NotReadableError') {
+        message = '他のアプリがカメラを使用中の可能性があります。Zoomなどを終了して再試行してください。';
+    }
+    
+    const errorDisplay = document.createElement('p');
+    errorDisplay.textContent = message;
+    errorDisplay.style.color = '#ffc107';
+    errorDisplay.style.textAlign = 'center';
+    errorDisplay.style.padding = '10px';
+    errorDisplay.style.fontSize = '0.9em';
+    errorDisplay.style.position = 'absolute'; // video要素と重ならないように
+    errorDisplay.style.top = '50%';
+    errorDisplay.style.left = '50%';
+    errorDisplay.style.transform = 'translate(-50%, -50%)';
+
+    localWrapper.appendChild(errorDisplay);
+}

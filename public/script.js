@@ -13,7 +13,7 @@ const roomNameDisplay = document.getElementById('room-name-display');
 const socket = io();
 let localStream;
 let currentRoom = null;
-const peerConnections = {}; // 複数のPeerConnectionを管理するオブジェクト
+const peerConnections = {}; // 相手ごとの接続情報（PCとICE候補キュー）を管理
 
 // STUNサーバーの設定
 const configuration = {
@@ -37,19 +37,15 @@ async function joinRoom(roomName) {
     roomNameDisplay.textContent = `ルーム: ${currentRoom}`;
 
     try {
-        // ★★★ ここからが修正部分 ★★★
         const constraints = {
             video: true,
             audio: {
-                // これらの設定で音声処理を強制的に有効化します
-                echoCancellation: true,    // エコーキャンセレーション
-                noiseSuppression: true,  // ノイズ抑制（環境音などを低減）
-                autoGainControl: true      // 自動ゲインコントロール（声の大きさを自動調整）
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true
             }
         };
         localStream = await navigator.mediaDevices.getUserMedia(constraints);
-        // ★★★ ここまでが修正部分 ★★★
-
         localVideo.srcObject = localStream;
         socket.emit('join room', roomName);
     } catch (e) {
@@ -74,17 +70,22 @@ socket.on('room joined', (data) => {
     });
 });
 
-// 新しいユーザーがルームに参加した通知を受け取ったとき
+// ★★★ ここが重要な変更点 ★★★
+// 新しいユーザーがルームに参加した通知を受け取ったとき（既存ユーザー側の処理）
 socket.on('user joined', (userId) => {
     console.log(`新しいユーザーが参加しました: ${userId}`);
-    // この時点では何もしない。新しいユーザー（Initiator）からのOfferを待つ。
+    // 新しいユーザーとの接続オブジェクトを「受け身」の状態で事前に作成しておく。
+    // これにより、相手からのOfferメッセージを確実に待つことができる。
+    if (!peerConnections[userId]) {
+        createPeerConnection(userId, false);
+    }
 });
 
 // ユーザーがルームから退出したとき
 socket.on('user left', (userId) => {
     console.log(`ユーザーが退出しました: ${userId}`);
     if (peerConnections[userId]) {
-        peerConnections[userId].close();
+        peerConnections[userId].pc.close();
         delete peerConnections[userId];
     }
     const remoteVideoWrapper = document.getElementById(`wrapper-${userId}`);
@@ -101,45 +102,58 @@ socket.on('room full', (roomName) => {
 
 // シグナリングメッセージを受信したとき
 socket.on('message', async (message, fromId) => {
-    // 相手との接続オブジェクトがまだなければ作成する（Offerを受け取った側）
-    if (!peerConnections[fromId]) {
-        createPeerConnection(fromId, false);
+    // ★★★ ここのロジックを簡潔化 ★★★
+    // この時点でpeerConnections[fromId]は必ず存在するはず
+    const peer = peerConnections[fromId];
+    if (!peer) {
+        console.error(`不明なピアからのメッセージです: ${fromId}`);
+        return;
     }
-
-    const pc = peerConnections[fromId];
     
     try {
         if (message.type === 'offer') {
-            if (pc.signalingState !== 'stable') {
-                console.warn(`Offerを受け取りましたが、状態がstableではないため無視します。現在の状態: ${pc.signalingState}`);
+            if (peer.pc.signalingState !== 'stable') {
+                console.warn(`Offerを受け取りましたが、状態がstableではないため無視します。現在の状態: ${peer.pc.signalingState}`);
                 return;
             }
-            await pc.setRemoteDescription(new RTCSessionDescription(message));
-            const answer = await pc.createAnswer();
-            await pc.setLocalDescription(answer);
+            await peer.pc.setRemoteDescription(new RTCSessionDescription(message));
+            const answer = await peer.pc.createAnswer();
+            await peer.pc.setLocalDescription(answer);
             socket.emit('message', answer, fromId);
+            await processIceCandidateQueue(peer);
 
         } else if (message.type === 'answer') {
-            if (pc.signalingState !== 'have-local-offer') {
-                console.warn(`Answerを受け取りましたが、状態がhave-local-offerではないため無視します。現在の状態: ${pc.signalingState}`);
+            if (peer.pc.signalingState !== 'have-local-offer') {
+                console.warn(`Answerを受け取りましたが、状態がhave-local-offerではないため無視します。現在の状態: ${peer.pc.signalingState}`);
                 return;
             }
-            await pc.setRemoteDescription(new RTCSessionDescription(message));
+            await peer.pc.setRemoteDescription(new RTCSessionDescription(message));
+            await processIceCandidateQueue(peer);
 
         } else if (message.type === 'candidate' && message.candidate) {
-            await pc.addIceCandidate(new RTCIceCandidate(message.candidate));
+            if (peer.pc.remoteDescription) {
+                await peer.pc.addIceCandidate(new RTCIceCandidate(message.candidate));
+            } else {
+                console.log('ICE候補を待機リストに追加します');
+                peer.iceCandidateQueue.push(message.candidate);
+            }
         }
     } catch (e) {
         console.error(`メッセージ処理中にエラーが発生しました (from: ${fromId}):`, e);
     }
 });
 
+
 // --- 3. WebRTCの処理 ---
 
 function createPeerConnection(partnerId, isInitiator) {
     console.log(`PeerConnectionを作成します for ${partnerId} (Initiator: ${isInitiator})`);
     const pc = new RTCPeerConnection(configuration);
-    peerConnections[partnerId] = pc;
+
+    peerConnections[partnerId] = {
+        pc: pc,
+        iceCandidateQueue: []
+    };
 
     localStream.getTracks().forEach(track => {
         pc.addTrack(track, localStream);
@@ -171,6 +185,14 @@ function createPeerConnection(partnerId, isInitiator) {
     return pc;
 }
 
+async function processIceCandidateQueue(peer) {
+    while (peer.iceCandidateQueue.length > 0) {
+        const candidate = peer.iceCandidateQueue.shift();
+        console.log('待機リストからICE候補を処理します:', candidate);
+        await peer.pc.addIceCandidate(new RTCIceCandidate(candidate));
+    }
+}
+
 function addRemoteVideoStream(userId, stream) {
     if (document.getElementById(`video-${userId}`)) return;
 
@@ -198,6 +220,5 @@ hangupButton.addEventListener('click', () => {
 });
 
 window.addEventListener('beforeunload', () => {
-    // ページを閉じる・リロードする際にソケット接続を明示的に切断
     socket.disconnect();
 });

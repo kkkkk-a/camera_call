@@ -62,7 +62,7 @@ body {
     overflow: hidden;
     position: relative;
     width: 100%;
-    aspect-ratio: 16 / 9; /* アスペクト比を16:9に */
+    aspect-ratio: 16 / 9;
     cursor: pointer;
     transition: border-color 0.2s;
 }
@@ -95,7 +95,6 @@ body {
     transform: scaleX(-1);
 }
 
-/* ★★★ 字幕用のスタイルを追加 ★★★ */
 .subtitle {
     position: absolute;
     bottom: 30px;
@@ -121,12 +120,53 @@ body {
     bottom: 50px;
 }
 
-/* その他のスタイル */
 h1, h2 { text-align: center; }
-.button-container { text-align: center; margin-top: 20px; }
-button { padding: 10px 20px; font-size: 16px; cursor: pointer; border: none; border-radius: 5px; color: white; }
-#join-button { background-color: #3498db; }
-#join-button:hover { background-color: #2980b9; }
-#hangup-button { background-color: #e74c3c; width: 100%; }
-#hangup-button:hover { background-color: #c0392b; }
-input { padding: 10px; font-size: 16px; margin-right: 10px; border: 1px solid #ccc; border-radius: 5px; }
+
+.controls-container {
+    display: flex;
+    gap: 10px;
+    margin-top: 20px;
+}
+
+.controls-container button {
+    flex-grow: 1;
+    padding: 10px;
+    font-size: 14px;
+    cursor: pointer;
+    border: none;
+    border-radius: 5px;
+    color: white;
+    transition: background-color 0.2s;
+}
+
+#mic-button, #video-button {
+    background-color: #3498db;
+}
+
+#mic-button:hover, #video-button:hover {
+    background-color: #2980b9;
+}
+
+#mic-button.muted, #video-button.off {
+    background-color: #e74c3c;
+}
+
+#mic-button.muted:hover, #video-button.off:hover {
+    background-color: #c0392b;
+}
+
+#hangup-button {
+    background-color: #95a5a6;
+}
+
+#hangup-button:hover {
+    background-color: #7f8c8d;
+}
+
+input {
+    padding: 10px;
+    font-size: 16px;
+    margin-right: 10px;
+    border: 1px solid #ccc;
+    border-radius: 5px;
+}

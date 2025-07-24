@@ -18,8 +18,8 @@ let localStream;
 let currentRoom = null;
 const peerConnections = {};
 
-let recognition = null; // 音声認識オブジェクトをグローバルに
-let recognitionActive = false; // 音声認識を続けるかのフラグ
+let recognition = null;
+let recognitionActive = false;
 
 const configuration = {
     iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
@@ -67,25 +67,39 @@ async function joinRoom(roomName) {
 
 // --- 2. Socket.IOイベントのハンドリング ---
 socket.on('room joined', (data) => {
-    console.log(`ルーム '${data.roomId}' に参加しました。`);
+    // console.log(`ルーム '${data.roomId}' に参加しました。`);
     data.otherUsers.forEach(userId => {
         if (!peerConnections[userId]) createPeerConnection(userId, true);
     });
 });
 
 socket.on('user joined', (userId) => {
-    console.log(`新しいユーザーが参加しました: ${userId}`);
+    // console.log(`新しいユーザーが参加しました: ${userId}`);
     if (!peerConnections[userId]) createPeerConnection(userId, false);
 });
 
+// ★★★ ゴースト対策：切断処理を強化 ★★★
 socket.on('user left', (userId) => {
-    console.log(`ユーザーが退出しました: ${userId}`);
+    // console.log(`ユーザーが退出しました: ${userId}`);
     if (peerConnections[userId]) {
         peerConnections[userId].pc.close();
         delete peerConnections[userId];
     }
+
     const remoteVideoWrapper = document.getElementById(`wrapper-${userId}`);
-    if (remoteVideoWrapper) remoteVideoWrapper.remove();
+    if (remoteVideoWrapper) {
+        // メイン画面に表示されていたら、それも考慮する
+        const isMain = remoteVideoWrapper.parentElement.id === 'main-video-container';
+        remoteVideoWrapper.remove();
+
+        // もし退出したユーザーがメイン画面だったら、新しいメインを設定する
+        if (isMain) {
+            const nextMain = thumbnailGrid.querySelector('.video-wrapper');
+            if (nextMain) {
+                setMainVideo(nextMain);
+            }
+        }
+    }
 });
 
 socket.on('room full', (roomName) => {
@@ -93,14 +107,9 @@ socket.on('room full', (roomName) => {
     location.reload();
 });
 
-// ★★★ 接続ロジックを厳密化 ★★★
 socket.on('message', async (message, fromId) => {
     const peer = peerConnections[fromId];
-    // 接続オブジェクトが存在しないピアからのメッセージは無視する
-    if (!peer) {
-        console.warn(`不明なピアからのメッセージを無視しました: ${fromId}`);
-        return;
-    }
+    if (!peer) return;
 
     try {
         if (message.type === 'offer') {
@@ -120,7 +129,7 @@ socket.on('message', async (message, fromId) => {
             }
         }
     } catch (e) {
-        console.error(`メッセージ処理中にエラー (from: ${fromId}):`, e);
+        // console.error(`メッセージ処理中にエラー (from: ${fromId}):`, e);
     }
 });
 
@@ -130,7 +139,7 @@ socket.on('subtitle', (subtitle, fromId) => {
 
 // --- 3. WebRTCの処理 ---
 function createPeerConnection(partnerId, isInitiator) {
-    console.log(`PeerConnectionを作成します for ${partnerId} (Initiator: ${isInitiator})`);
+    // console.log(`PeerConnectionを作成します for ${partnerId} (Initiator: ${isInitiator})`);
     const pc = new RTCPeerConnection(configuration);
     peerConnections[partnerId] = { pc: pc, iceCandidateQueue: [] };
     localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
@@ -183,7 +192,9 @@ function addVideoStream(id, name, stream) {
 
 function setMainVideo(targetWrapper) {
     const currentMain = mainVideoContainer.querySelector('.video-wrapper');
-    if (currentMain) thumbnailGrid.appendChild(currentMain);
+    if (currentMain && currentMain.id !== targetWrapper.id) {
+         thumbnailGrid.appendChild(currentMain);
+    }
     mainVideoContainer.appendChild(targetWrapper);
 }
 
@@ -201,13 +212,9 @@ function showSubtitle(wrapperId, text) {
 }
 
 // --- 5. 字幕機能 (Web Speech API) ---
-// ★★★ 音声認識ロジックを安定化 ★★★
 function startSpeechRecognition() {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-        console.warn('このブラウザはWeb Speech APIをサポートしていません。');
-        return;
-    }
+    if (!SpeechRecognition) return;
 
     recognition = new SpeechRecognition();
     recognition.lang = 'ja-JP';
@@ -227,26 +234,15 @@ function startSpeechRecognition() {
     };
     
     recognition.onend = () => {
-        if (recognitionActive) {
-            console.log('音声認識が終了したため、再開します。');
-            recognition.start();
-        } else {
-            console.log('音声認識を意図的に停止しました。');
-        }
+        if (recognitionActive) recognition.start();
     };
 
     recognition.onerror = (event) => {
-        console.error('音声認識エラー:', event.error);
-        if (event.error === 'no-speech' || event.error === 'aborted') {
-            // これらはエラーではない場合が多いため、onendで自動再開させる
-        } else if (event.error === 'not-allowed') {
-            // マイクが許可されなかった場合は、認識を完全に停止
+        if (event.error === 'not-allowed') {
             recognitionActive = false;
         }
     };
-
     recognition.start();
-    console.log('音声認識を開始しました。');
 }
 
 function stopSpeechRecognition() {
@@ -279,12 +275,18 @@ micButton.addEventListener('click', () => {
     }
 });
 
+// ★★★ ビデオON/OFFのロジック修正 ★★★
 videoButton.addEventListener('click', () => {
     if (localStream) {
         isVideoOn = !isVideoOn;
         localStream.getVideoTracks().forEach(track => track.enabled = isVideoOn);
         videoButton.textContent = isVideoOn ? 'ビデオOFF' : 'ビデオON';
         videoButton.classList.toggle('off', !isVideoOn);
+
+        // もし画面共有中なら、それを停止してカメラに戻す
+        if (!isVideoOn && isScreenSharing) {
+            stopScreenShare(true); // trueを渡して、ビデオOFF状態を維持する
+        }
     }
 });
 
@@ -310,25 +312,42 @@ async function startScreenShare() {
         isScreenSharing = true;
         shareScreenButton.textContent = '共有停止';
         shareScreenButton.classList.add('sharing');
+        
+        // 画面共有とビデオON/OFFボタンの状態を同期
+        isVideoOn = true;
+        videoButton.textContent = 'ビデオOFF';
+        videoButton.classList.remove('off');
+
         screenTrack.onended = () => stopScreenShare();
     } catch (e) {
-        console.error('画面共有の開始に失敗しました:', e);
+        // console.error('画面共有の開始に失敗しました:', e);
     }
 }
 
-async function stopScreenShare() {
-    if (!isScreenSharing || !cameraTrack) return;
+// ★★★ ビデオON/OFFのロジック修正 ★★★
+async function stopScreenShare(keepVideoOff = false) {
+    if (!isScreenSharing) return;
+
     for (const peerId in peerConnections) {
         const sender = peerConnections[peerId].pc.getSenders().find(s => s.track && s.track.kind === 'video');
         if (sender) await sender.replaceTrack(cameraTrack);
     }
     screenStream.getTracks().forEach(track => track.stop());
+    
     const localVideo = document.getElementById('video-local');
     localVideo.srcObject = localStream;
     isScreenSharing = false;
     screenStream = null;
     shareScreenButton.textContent = '画面共有';
     shareScreenButton.classList.remove('sharing');
+
+    // ビデオOFFボタン経由で呼ばれた場合は、ビデオを無効状態にする
+    if (keepVideoOff) {
+        isVideoOn = false;
+        localStream.getVideoTracks().forEach(track => track.enabled = false);
+        videoButton.textContent = 'ビデオON';
+        videoButton.classList.add('off');
+    }
 }
 
 shareScreenButton.addEventListener('click', () => {

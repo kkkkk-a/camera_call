@@ -26,7 +26,7 @@ io.on('connection', (socket) => {
         const clientsInRoom = io.sockets.adapter.rooms.get(roomName);
         const numClients = clientsInRoom ? clientsInRoom.size : 0;
 
-        if (numClients >= 10) {
+        if (numClients >= 5) {
             socket.emit('room full', roomName);
             return;
         }

@@ -85,7 +85,38 @@ body {
 #entry-container button:hover {
     background-color: #5dade2;
 }
+.instructions {
+    max-width: 400px;
+    margin: 0 auto 1.5em auto;
+    text-align: left;
+    background-color: var(--bg-light);
+    padding: 1em;
+    border-radius: 8px;
+    border-left: 5px solid var(--blue);
+}
 
+.instructions p {
+    margin-top: 0;
+    margin-bottom: 0.5em;
+    color: var(--text-light);
+}
+
+.instructions ul {
+    margin: 0;
+    padding-left: 20px;
+}
+
+.instructions li {
+    margin-bottom: 0.5em;
+}
+
+.instructions .notes {
+    margin-top: 1em;
+    padding-top: 1em;
+    border-top: 1px dashed var(--grey);
+    font-size: 0.9em;
+    color: var(--grey);
+}
 /* ========================================
    通話画面レイアウト
    ======================================== */

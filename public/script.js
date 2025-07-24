@@ -11,6 +11,7 @@ const mainVideoContainer = document.getElementById('main-video-container');
 const thumbnailGrid = document.getElementById('thumbnail-grid');
 const micButton = document.getElementById('mic-button');
 const videoButton = document.getElementById('video-button');
+const shareScreenButton = document.getElementById('share-screen-button');
 
 const socket = io();
 let localStream;
@@ -87,11 +88,12 @@ socket.on('room full', (roomName) => {
 });
 
 socket.on('message', async (message, fromId) => {
-    const peer = peerConnections[fromId];
-    if (!peer) {
-        if (!peerConnections[fromId]) createPeerConnection(fromId, false);
-        return;
+    if (!peerConnections[fromId]) {
+        createPeerConnection(fromId, false);
     }
+    const peer = peerConnections[fromId];
+    if (!peer) return;
+
     try {
         if (message.type === 'offer') {
             await peer.pc.setRemoteDescription(new RTCSessionDescription(message));
@@ -208,6 +210,7 @@ function startSpeechRecognition() {
     const recognition = new SpeechRecognition();
     recognition.lang = 'ja-JP';
     recognition.interimResults = true;
+    recognition.continuous = true;
 
     recognition.onresult = (event) => {
         let interimTranscript = '';
@@ -229,7 +232,8 @@ function startSpeechRecognition() {
     };
     
     recognition.onend = () => {
-        recognition.start();
+        console.log('音声認識が終了しました。1秒後に再開します。');
+        setTimeout(() => recognition.start(), 1000);
     };
 
     recognition.onerror = (event) => {
@@ -237,6 +241,7 @@ function startSpeechRecognition() {
     };
 
     recognition.start();
+    console.log('音声認識を開始しました。');
 }
 
 // --- 6. 退出処理 ---
@@ -274,5 +279,72 @@ videoButton.addEventListener('click', () => {
             videoButton.textContent = 'ビデオON';
             videoButton.classList.add('off');
         }
+    }
+});
+
+// --- 8. 画面共有機能 ---
+let isScreenSharing = false;
+let screenStream = null;
+let cameraTrack = null;
+
+async function startScreenShare() {
+    if (isScreenSharing) return;
+
+    try {
+        screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+        
+        if (localStream && localStream.getVideoTracks().length > 0) {
+            cameraTrack = localStream.getVideoTracks()[0];
+        }
+
+        const screenTrack = screenStream.getVideoTracks()[0];
+
+        for (const peerId in peerConnections) {
+            const sender = peerConnections[peerId].pc.getSenders().find(s => s.track && s.track.kind === 'video');
+            if (sender) {
+                await sender.replaceTrack(screenTrack);
+            }
+        }
+
+        const localVideo = document.getElementById('video-local');
+        localVideo.srcObject = screenStream;
+        isScreenSharing = true;
+        shareScreenButton.textContent = '共有停止';
+        shareScreenButton.classList.add('sharing');
+
+        screenTrack.onended = () => {
+            stopScreenShare();
+        };
+
+    } catch (e) {
+        console.error('画面共有の開始に失敗しました:', e);
+    }
+}
+
+async function stopScreenShare() {
+    if (!isScreenSharing || !cameraTrack) return;
+
+    for (const peerId in peerConnections) {
+        const sender = peerConnections[peerId].pc.getSenders().find(s => s.track && s.track.kind === 'video');
+        if (sender) {
+            await sender.replaceTrack(cameraTrack);
+        }
+    }
+
+    screenStream.getTracks().forEach(track => track.stop());
+    
+    const localVideo = document.getElementById('video-local');
+    localVideo.srcObject = localStream;
+    isScreenSharing = false;
+    screenStream = null;
+    shareScreenButton.textContent = '画面共有';
+    shareScreenButton.classList.remove('sharing');
+}
+
+shareScreenButton.addEventListener('click', () => {
+    if (isScreenSharing) {
+        stopScreenShare();
+    } else {
+        startScreenShare();
     }
 });

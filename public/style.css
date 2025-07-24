@@ -46,9 +46,7 @@ body {
     border: 1px solid var(--border-color);
     transition: transform 0.3s ease-in-out;
 }
-#entry-container:hover {
-    transform: translateY(-5px);
-}
+
 #entry-container h1 {
     margin-top: 0;
     margin-bottom: 0.5em;

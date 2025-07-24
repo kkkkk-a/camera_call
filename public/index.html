@@ -16,7 +16,6 @@
         <button id="join-button">参加する</button>
     </div>
 
-    <!-- ★★★ ここから構造を大きく変更 ★★★ -->
     <div id="call-container" style="display: none;">
         <div class="main-and-side">
             <div id="main-video-container">
@@ -27,13 +26,14 @@
                 <div id="thumbnail-grid">
                     <!-- 自分と他の人のビデオがサムネイルで表示される -->
                 </div>
-                <div class="button-container">
+                <div class="controls-container">
+                    <button id="mic-button">マイクOFF</button>
+                    <button id="video-button">ビデオOFF</button>
                     <button id="hangup-button">退出する</button>
                 </div>
             </div>
         </div>
     </div>
-    <!-- ★★★ ここまで構造を大きく変更 ★★★ -->
 
     <script src="/socket.io/socket.io.js"></script>
     <script src="script.js"></script>

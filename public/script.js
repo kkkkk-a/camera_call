@@ -1,6 +1,5 @@
 'use strict';
 
-// ★★★ ブラウザがHTMLの準備を終えてから、すべてのコードを実行する ★★★
 window.addEventListener('DOMContentLoaded', () => {
 
     // HTML要素の取得
@@ -24,8 +23,8 @@ window.addEventListener('DOMContentLoaded', () => {
     let localStream;
     let currentRoom = null;
     const peerConnections = {};
-    let isRoomLocked = false;
     let myUsername = '自分';
+    let isHost = false; // ★改善点: 自分がホストかどうかのフラグ
 
     const configuration = {
         iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
@@ -33,23 +32,25 @@ window.addEventListener('DOMContentLoaded', () => {
 
     // --- 1. 入室処理 ---
     joinButton.addEventListener('click', () => {
-        const roomName = roomInput.value;
+        const roomName = roomInput.value.trim();
         if (!roomName) {
             alert('合言葉を入力してください。');
             return;
         }
         setupLocalMedia(roomName);
     });
+    // Enterキーでも参加できるようにする
+    roomInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            joinButton.click();
+        }
+    });
 
     async function setupLocalMedia(roomName) {
         try {
             const constraints = {
                 video: true,
-                audio: {
-                    echoCancellation: true,
-                    noiseSuppression: true,
-                    autoGainControl: true
-                }
+                audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
             };
             localStream = await navigator.mediaDevices.getUserMedia(constraints);
             joinRoom(roomName);
@@ -68,21 +69,25 @@ window.addEventListener('DOMContentLoaded', () => {
         addVideoStream('local', myUsername, localStream);
         setMainVideo(document.getElementById('wrapper-local'));
         
-        socket.emit('join room', roomName);
+        // ★改善点: サーバーに自分の初期名を渡す
+        socket.emit('join room', roomName, myUsername);
     }
-
 
     // --- 2. Socket.IOイベントのハンドリング ---
     socket.on('room joined', (data) => {
-        data.otherUsers.forEach(userId => {
-            if (!peerConnections[userId]) createPeerConnection(userId, true);
+        // 既存のユーザー全員に対してPeerConnectionを作成
+        data.otherUsers.forEach(user => {
+            if (!peerConnections[user.id]) createPeerConnection(user.id, user.username, true);
         });
-        isRoomLocked = data.isLocked;
-        updateLockState(isRoomLocked);
+        // ★改善点: ホスト状態とロック状態を更新
+        isHost = (socket.id === data.hostId);
+        updateLockState(data.isLocked);
+        updateHostControls();
     });
 
-    socket.on('user joined', (userId) => {
-        if (!peerConnections[userId]) createPeerConnection(userId, false);
+    socket.on('user joined', (user) => {
+        // 新しく参加したユーザーに対してPeerConnectionを作成
+        if (!peerConnections[user.id]) createPeerConnection(user.id, user.username, false);
     });
 
     socket.on('user left', (userId) => {
@@ -95,8 +100,9 @@ window.addEventListener('DOMContentLoaded', () => {
             const isMain = remoteVideoWrapper.parentElement.id === 'main-video-container';
             remoteVideoWrapper.remove();
             if (isMain) {
-                const nextMain = thumbnailGrid.querySelector('.video-wrapper');
-                if (nextMain) setMainVideo(nextMain);
+                // メインビデオのユーザーが退出したら、自分のビデオをメインにする
+                const localVideoWrapper = document.getElementById('wrapper-local');
+                if (localVideoWrapper) setMainVideo(localVideoWrapper);
             }
         }
     });
@@ -111,40 +117,46 @@ window.addEventListener('DOMContentLoaded', () => {
         location.reload();
     });
 
-    socket.on('lock state changed', (locked) => {
-        isRoomLocked = locked;
-        updateLockState(isRoomLocked);
+    // ★改善点: ホスト変更の通知を受け取る
+    socket.on('new host', (newHostId) => {
+        isHost = (socket.id === newHostId);
+        updateHostControls();
+        const hostNameTag = document.querySelector(`#wrapper-${newHostId} h3`);
+        const hostName = hostNameTag ? hostNameTag.textContent : '新しいホスト';
+        appendChatMessage('システム', `${hostName}が新しいホストになりました。`, false, true);
     });
 
+    socket.on('lock state changed', (locked) => {
+        updateLockState(locked);
+        const message = locked ? 'ルームがホストによってロックされました。' : 'ルームのロックが解除されました。';
+        appendChatMessage('システム', message, false, true);
+    });
+
+    // ★改善点: チャットメッセージの受信処理を簡潔化
     socket.on('chat message', (data) => {
-        const { senderId, msg } = data;
-        const nameTag = document.querySelector(`#wrapper-${senderId} h3`);
-        const senderName = nameTag ? nameTag.textContent : `User: ${senderId.substring(0, 4)}`;
-        appendChatMessage(senderName, msg);
+        const isMyMessage = data.senderId === socket.id;
+        // 自分のメッセージは送信時に表示済みなので、他人からのメッセージのみ表示
+        if (!isMyMessage) {
+            appendChatMessage(data.senderName, data.msg);
+        }
     });
 
     socket.on('message', async (message, fromId) => {
+        if (!peerConnections[fromId]) return;
         const peer = peerConnections[fromId];
-        if (!peer) return;
         try {
             if (message.type === 'offer') {
                 await peer.pc.setRemoteDescription(new RTCSessionDescription(message));
                 const answer = await peer.pc.createAnswer();
                 await peer.pc.setLocalDescription(answer);
                 socket.emit('message', answer, fromId);
-                await processIceCandidateQueue(peer);
             } else if (message.type === 'answer') {
                 await peer.pc.setRemoteDescription(new RTCSessionDescription(message));
-                await processIceCandidateQueue(peer);
-            } else if (message.type === 'candidate' && message.candidate) {
-                if (peer.pc.remoteDescription) {
-                    await peer.pc.addIceCandidate(new RTCIceCandidate(message.candidate));
-                } else {
-                    peer.iceCandidateQueue.push(message.candidate);
-                }
+            } else if (message.type === 'candidate') {
+                await peer.pc.addIceCandidate(new RTCIceCandidate(message.candidate));
             }
         } catch (e) {
-            // console.error(`メッセージ処理中にエラー (from: ${fromId}):`, e);
+            console.error(`シグナリングメッセージの処理中にエラー (from: ${fromId}):`, e);
         }
     });
 
@@ -157,31 +169,29 @@ window.addEventListener('DOMContentLoaded', () => {
 
 
     // --- 3. WebRTCの処理 ---
-    function createPeerConnection(partnerId, isInitiator) {
+    function createPeerConnection(partnerId, partnerName, isInitiator) {
         const pc = new RTCPeerConnection(configuration);
-        peerConnections[partnerId] = { pc: pc, iceCandidateQueue: [] };
+        peerConnections[partnerId] = { pc: pc };
         
         localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+
+        pc.onicecandidate = (event) => {
+            if (event.candidate) {
+                socket.emit('message', { type: 'candidate', candidate: event.candidate }, partnerId);
+            }
+        };
+
+        pc.ontrack = (event) => {
+            addVideoStream(partnerId, partnerName, event.streams[0]);
+        };
 
         if (isInitiator) {
             pc.createOffer()
                 .then(offer => pc.setLocalDescription(offer))
-                .then(() => socket.emit('message', pc.localDescription, partnerId))
+                .then(() => {
+                    socket.emit('message', pc.localDescription, partnerId);
+                })
                 .catch(e => console.error(`Offer作成失敗 for ${partnerId}:`, e));
-        }
-        pc.onicecandidate = (event) => {
-            if (event.candidate) socket.emit('message', { type: 'candidate', candidate: event.candidate }, partnerId);
-        };
-        pc.ontrack = (event) => {
-            addVideoStream(partnerId, `User: ${partnerId.substring(0, 4)}`, event.streams[0]);
-        };
-        return pc;
-    }
-
-    async function processIceCandidateQueue(peer) {
-        while (peer.iceCandidateQueue.length > 0) {
-            const candidate = peer.iceCandidateQueue.shift();
-            await peer.pc.addIceCandidate(new RTCIceCandidate(candidate));
         }
     }
 
@@ -191,24 +201,31 @@ window.addEventListener('DOMContentLoaded', () => {
         const wrapper = document.createElement('div');
         wrapper.className = 'video-wrapper';
         wrapper.id = `wrapper-${id}`;
+        
         const video = document.createElement('video');
-        video.id = `video-${id}`;
-        if (stream) {
-            video.srcObject = stream;
-        }
+        video.srcObject = stream;
         video.autoplay = true;
         video.playsInline = true;
         if (id === 'local') video.muted = true;
+
         const nameTag = document.createElement('h3');
         nameTag.textContent = name;
+        if (id === 'local') {
+            nameTag.title = 'クリックして名前を変更';
+            nameTag.addEventListener('click', () => makeNameEditable(nameTag));
+        }
+        
+        // ★改善点: ホストの表示
+        if (isHost && id === socket.id) {
+            nameTag.textContent += ' (ホスト)';
+        }
+
         wrapper.appendChild(video);
         wrapper.appendChild(nameTag);
         thumbnailGrid.appendChild(wrapper);
-        if (id === 'local') {
-            nameTag.title = 'クリックして編集';
-            nameTag.addEventListener('click', () => makeNameEditable(nameTag));
-        }
+
         wrapper.addEventListener('click', (e) => {
+            // 入力フィールドをクリックした場合はメインビデオにしない
             if (e.target.tagName !== 'INPUT') {
                 setMainVideo(wrapper);
             }
@@ -227,8 +244,9 @@ window.addEventListener('DOMContentLoaded', () => {
     hangupButton.addEventListener('click', () => {
         location.reload();
     });
+    // ブラウザを閉じる/リロードする直前に切断処理
     window.addEventListener('beforeunload', () => {
-        socket.disconnect();
+        if(socket) socket.disconnect();
     });
 
     // --- 6. メディアコントロール機能 ---
@@ -248,8 +266,10 @@ window.addEventListener('DOMContentLoaded', () => {
             localStream.getVideoTracks().forEach(track => track.enabled = isVideoOn);
             videoButton.textContent = isVideoOn ? 'ビデオOFF' : 'ビデオON';
             videoButton.classList.toggle('off', !isVideoOn);
+            
+            // ビデオOFF時に画面共有中なら、共有も停止する
             if (!isVideoOn && isScreenSharing) {
-                stopScreenShare(true);
+                stopScreenShare(true); // ビデオOFFを維持したまま共有停止
             }
         }
     });
@@ -258,53 +278,82 @@ window.addEventListener('DOMContentLoaded', () => {
     let isScreenSharing = false;
     let screenStream = null;
     let cameraTrack = null;
+    let wasVideoEnabledBeforeShare = true; // ★改善点: 共有開始前のビデオ状態を保存
+
     async function startScreenShare() {
         if (isScreenSharing || !localStream) return;
         try {
-            screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
-            if (localStream && localStream.getVideoTracks().length > 0) {
-                cameraTrack = localStream.getVideoTracks()[0];
+            screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+            
+            wasVideoEnabledBeforeShare = isVideoOn; // ★改善点: 現在のビデオ状態を保存
+            if (!wasVideoEnabledBeforeShare) {
+                // ビデオがオフだったら、一時的にオンにしてトラックを取得
+                localStream.getVideoTracks().forEach(track => track.enabled = true);
             }
+            cameraTrack = localStream.getVideoTracks()[0];
+
             const screenTrack = screenStream.getVideoTracks()[0];
+            // 全てのPeerConnectionのビデオトラックを画面共有に差し替え
             for (const peerId in peerConnections) {
                 const sender = peerConnections[peerId].pc.getSenders().find(s => s.track && s.track.kind === 'video');
                 if (sender) await sender.replaceTrack(screenTrack);
             }
+            // 自分のビデオも画面共有に差し替え
             const localVideo = document.getElementById('video-local');
-            localVideo.srcObject = screenStream;
+            localVideo.srcObject = new MediaStream([screenTrack]);
+
             isScreenSharing = true;
             shareScreenButton.textContent = '共有停止';
             shareScreenButton.classList.add('sharing');
+            
+            // 画面共有中はビデオONの状態としてUIを更新
             isVideoOn = true;
             videoButton.textContent = 'ビデオOFF';
             videoButton.classList.remove('off');
+
+            // ユーザーがブラウザのUIで共有停止した場合のイベント
             screenTrack.onended = () => stopScreenShare();
+
         } catch (e) {
-            // console.error('画面共有の開始に失敗しました:', e);
+            console.error('画面共有の開始に失敗しました:', e);
+            // ★改善点: 共有開始に失敗したら、ビデオの状態を元に戻す
+            if (!wasVideoEnabledBeforeShare) {
+                localStream.getVideoTracks().forEach(track => track.enabled = false);
+            }
         }
     }
+    
     async function stopScreenShare(keepVideoOff = false) {
         if (!isScreenSharing) return;
+
+        // 全てのPeerConnectionのトラックをカメラに戻す
         if (cameraTrack) {
             for (const peerId in peerConnections) {
                 const sender = peerConnections[peerId].pc.getSenders().find(s => s.track && s.track.kind === 'video');
                 if (sender) await sender.replaceTrack(cameraTrack);
             }
         }
+        
+        // 画面共有ストリームを停止
         screenStream.getTracks().forEach(track => track.stop());
+        
+        // 自分のビデオをカメラストリームに戻す
         const localVideo = document.getElementById('video-local');
         localVideo.srcObject = localStream;
+        
         isScreenSharing = false;
         screenStream = null;
+        cameraTrack = null;
         shareScreenButton.textContent = '画面共有';
         shareScreenButton.classList.remove('sharing');
-        if (keepVideoOff) {
-            isVideoOn = false;
-            if(localStream) localStream.getVideoTracks().forEach(track => track.enabled = false);
-            videoButton.textContent = 'ビデオON';
-            videoButton.classList.add('off');
-        }
+
+        // ★改善点: 共有開始前の状態、または引数に基づいてビデオの状態を復元
+        isVideoOn = wasVideoEnabledBeforeShare && !keepVideoOff;
+        localStream.getVideoTracks().forEach(track => track.enabled = isVideoOn);
+        videoButton.textContent = isVideoOn ? 'ビデオOFF' : 'ビデオON';
+        videoButton.classList.toggle('off', !isVideoOn);
     }
+    
     shareScreenButton.addEventListener('click', () => {
         if (isScreenSharing) {
             stopScreenShare();
@@ -319,19 +368,24 @@ window.addEventListener('DOMContentLoaded', () => {
         const input = document.createElement('input');
         input.type = 'text';
         input.className = 'username-input';
-        input.value = nameTag.textContent;
+        input.value = myUsername; // グローバル変数から現在の名前を取得
         nameTag.parentElement.appendChild(input);
         input.focus();
+        
         const updateName = () => {
             const newName = input.value.trim();
-            if (newName && newName !== nameTag.textContent) {
-                nameTag.textContent = newName;
+            if (newName && newName !== myUsername) {
                 myUsername = newName;
                 socket.emit('change username', newName);
             }
+            // 表示を更新（ホスト表示も考慮）
+            let displayName = isHost ? `${myUsername} (ホスト)` : myUsername;
+            nameTag.textContent = displayName;
+            
             nameTag.style.display = 'block';
             input.remove();
         };
+        
         input.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') updateName();
         });
@@ -339,6 +393,15 @@ window.addEventListener('DOMContentLoaded', () => {
     }
 
     // --- 9. ロック機能とチャット機能 ---
+    // ★改善点: ホスト用のUI制御
+    function updateHostControls() {
+        lockRoomButton.style.display = isHost ? 'block' : 'none';
+        const localNameTag = document.querySelector('#wrapper-local h3');
+        if (localNameTag) {
+             localNameTag.textContent = isHost ? `${myUsername} (ホスト)` : myUsername;
+        }
+    }
+
     function updateLockState(locked) {
         if (locked) {
             lockRoomButton.textContent = '🔒 解除';
@@ -349,16 +412,24 @@ window.addEventListener('DOMContentLoaded', () => {
         }
     }
     lockRoomButton.addEventListener('click', () => {
-        socket.emit('toggle lock');
+        // UI上はホストしか押せないが、念の為チェック
+        if (isHost) {
+            socket.emit('toggle lock');
+        }
     });
 
-    function appendChatMessage(senderName, msg, isMyMessage = false) {
+    function appendChatMessage(senderName, msg, isMyMessage = false, isSystemMessage = false) {
         const item = document.createElement('li');
         if (isMyMessage) item.className = 'my-message';
-        const nameSpan = document.createElement('span');
-        nameSpan.className = 'sender-name';
-        nameSpan.textContent = `${senderName}: `;
-        item.appendChild(nameSpan);
+        if (isSystemMessage) item.className = 'system-message';
+
+        // システムメッセージでなければ送信者名を表示
+        if (!isSystemMessage) {
+            const nameSpan = document.createElement('span');
+            nameSpan.className = 'sender-name';
+            nameSpan.textContent = `${senderName}: `;
+            item.appendChild(nameSpan);
+        }
         item.append(msg);
         chatMessages.appendChild(item);
         chatMessages.scrollTop = chatMessages.scrollHeight;
@@ -366,11 +437,12 @@ window.addEventListener('DOMContentLoaded', () => {
 
     chatForm.addEventListener('submit', (e) => {
         e.preventDefault();
-        if (chatInput.value) {
-            appendChatMessage(myUsername, chatInput.value, true);
-            socket.emit('chat message', chatInput.value);
+        const message = chatInput.value.trim();
+        if (message) {
+            appendChatMessage(myUsername, message, true); // 自分のメッセージとして即時表示
+            socket.emit('chat message', message);
             chatInput.value = '';
         }
     });
 
-}); // ★★★ DOMContentLoaded イベントリスナーの閉じカッコ ★★★
+});

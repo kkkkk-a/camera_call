@@ -67,10 +67,12 @@ async function setupLocalMedia() {
         }
     } catch (e) {
         console.error('メディアの取得に失敗:', e);
-        addVideoStream('local', myUsername, null);
+        // メディアなしで参加を続ける
+        addVideoStream('local', myUsername + " (メディアなし)", null);
         setMainVideo(document.getElementById('wrapper-local'));
     }
 }
+
 
 // --- 2. Socket.IOイベントのハンドリング ---
 socket.on('room joined', (data) => {
@@ -195,6 +197,16 @@ function addVideoStream(id, name, stream) {
     video.id = `video-${id}`;
     if (stream) {
         video.srcObject = stream;
+    } else {
+        // メディアがない場合の表示
+        wrapper.style.backgroundColor = '#1c1c1c';
+        wrapper.style.display = 'flex';
+        wrapper.style.alignItems = 'center';
+        wrapper.style.justifyContent = 'center';
+        const noVideoText = document.createElement('p');
+        noVideoText.textContent = 'カメラなし';
+        noVideoText.style.color = '#777';
+        wrapper.appendChild(noVideoText);
     }
     video.autoplay = true;
     video.playsInline = true;
@@ -353,17 +365,14 @@ lockRoomButton.addEventListener('click', () => {
     socket.emit('toggle lock');
 });
 
-// チャットメッセージをリストに追加するヘルパー関数
 function appendChatMessage(senderName, msg, isMyMessage = false) {
     const item = document.createElement('li');
     if (isMyMessage) {
         item.className = 'my-message';
     }
-
     const nameSpan = document.createElement('span');
     nameSpan.className = 'sender-name';
     nameSpan.textContent = `${senderName}: `;
-    
     item.appendChild(nameSpan);
     item.append(msg);
     chatMessages.appendChild(item);

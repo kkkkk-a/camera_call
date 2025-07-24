@@ -2,7 +2,10 @@
 <html>
 <head>
     <title>WebRTC グループビデオ通話</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="stylesheet" href="style.css">
+    <link rel="icon" href="/favicon.ico">
 </head>
 <body>
 
@@ -13,18 +16,24 @@
         <button id="join-button">参加する</button>
     </div>
 
+    <!-- ★★★ ここから構造を大きく変更 ★★★ -->
     <div id="call-container" style="display: none;">
-        <h2 id="room-name-display"></h2>
-        <div id="video-grid">
-            <div class="video-wrapper">
-                <h3>自分</h3>
-                <video id="local-video" autoplay playsinline muted></video>
+        <div class="main-and-side">
+            <div id="main-video-container">
+                <!-- ここにクリックされた拡大ビデオが表示される -->
+            </div>
+            <div id="side-panel">
+                <h2 id="room-name-display"></h2>
+                <div id="thumbnail-grid">
+                    <!-- 自分と他の人のビデオがサムネイルで表示される -->
+                </div>
+                <div class="button-container">
+                    <button id="hangup-button">退出する</button>
+                </div>
             </div>
         </div>
-        <div class="button-container">
-            <button id="hangup-button">退出する</button>
-        </div>
     </div>
+    <!-- ★★★ ここまで構造を大きく変更 ★★★ -->
 
     <script src="/socket.io/socket.io.js"></script>
     <script src="script.js"></script>

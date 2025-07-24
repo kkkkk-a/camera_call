@@ -28,26 +28,19 @@ const configuration = {
     iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
 };
 
-// --- 1. 入室処理 ---
+// --- 1. 入室処理フローの抜本的見直し ---
 joinButton.addEventListener('click', () => {
     const roomName = roomInput.value;
-    if (roomName) {
-        joinRoom(roomName);
-    } else {
+    if (!roomName) {
         alert('合言葉を入力してください。');
+        return;
     }
+    
+    // ★★★ まずメディアの取得を試みる ★★★
+    setupLocalMedia(roomName);
 });
 
-function joinRoom(roomName) {
-    currentRoom = roomName;
-    entryContainer.style.display = 'none';
-    callContainer.style.display = 'block';
-    roomNameDisplay.textContent = `ルーム: ${currentRoom}`;
-    socket.emit('join room', roomName);
-    setupLocalMedia();
-}
-
-async function setupLocalMedia() {
+async function setupLocalMedia(roomName) {
     try {
         const constraints = {
             video: true,
@@ -57,20 +50,32 @@ async function setupLocalMedia() {
                 autoGainControl: true
             }
         };
+        // ユーザーのクリック直後に、まずこれを実行する
         localStream = await navigator.mediaDevices.getUserMedia(constraints);
-        addVideoStream('local', myUsername, localStream);
-        setMainVideo(document.getElementById('wrapper-local'));
-        for (const peerId in peerConnections) {
-            localStream.getTracks().forEach(track => {
-                peerConnections[peerId].pc.addTrack(track, localStream);
-            });
-        }
+        
+        // ★★★ メディア取得に成功した場合のみ、次のステップに進む ★★★
+        joinRoom(roomName);
+
     } catch (e) {
         console.error('メディアの取得に失敗:', e);
-        // メディアなしで参加を続ける
-        addVideoStream('local', myUsername + " (メディアなし)", null);
-        setMainVideo(document.getElementById('wrapper-local'));
+        // エラーメッセージを表示し、処理を中断する
+        alert('カメラまたはマイクへのアクセスに失敗しました。ブラウザの許可設定を確認し、他のアプリでカメラが使用されていないか確認してください。');
+        // この段階ではまだルームに参加していないので、リロードは不要
     }
+}
+
+function joinRoom(roomName) {
+    currentRoom = roomName;
+    entryContainer.style.display = 'none';
+    callContainer.style.display = 'block';
+    roomNameDisplay.textContent = `ルーム: ${currentRoom}`;
+
+    // 自分のビデオを先に追加
+    addVideoStream('local', myUsername, localStream);
+    setMainVideo(document.getElementById('wrapper-local'));
+    
+    // サーバーにルーム参加を通知
+    socket.emit('join room', roomName);
 }
 
 
@@ -162,9 +167,9 @@ socket.on('username changed', (data) => {
 function createPeerConnection(partnerId, isInitiator) {
     const pc = new RTCPeerConnection(configuration);
     peerConnections[partnerId] = { pc: pc, iceCandidateQueue: [] };
-    if (localStream) {
-        localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
-    }
+    // この時点でlocalStreamは必ず存在するので、トラックを追加する
+    localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+    
     if (isInitiator) {
         pc.createOffer()
             .then(offer => pc.setLocalDescription(offer))
@@ -197,16 +202,6 @@ function addVideoStream(id, name, stream) {
     video.id = `video-${id}`;
     if (stream) {
         video.srcObject = stream;
-    } else {
-        // メディアがない場合の表示
-        wrapper.style.backgroundColor = '#1c1c1c';
-        wrapper.style.display = 'flex';
-        wrapper.style.alignItems = 'center';
-        wrapper.style.justifyContent = 'center';
-        const noVideoText = document.createElement('p');
-        noVideoText.textContent = 'カメラなし';
-        noVideoText.style.color = '#777';
-        wrapper.appendChild(noVideoText);
     }
     video.autoplay = true;
     video.playsInline = true;
